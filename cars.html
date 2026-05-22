@@ -2,208 +2,565 @@
 <html lang="ro">
 <head>
 <meta charset="UTF-8">
-<title>Masini 3D Split Screen</title>
+<title>Arena Demolari 3D</title>
 <style>
   body { margin: 0; overflow: hidden; background: #111; }
   #crash {
-    position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    font-size: 40px; color: yellow; display: none;
+    position: absolute; top: 10px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 26px; color: yellow; display: none;
     text-shadow: 0 0 10px black;
+    font-family: Arial, sans-serif;
+  }
+  #status {
+    position: absolute; bottom: 10px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 14px; color: #0f0;
+    text-shadow: 0 0 5px black;
+    font-family: monospace;
   }
 </style>
 </head>
 <body>
 
-<div id="crash">ACCIDENT!</div>
+<div id="crash">IMPACT PUTERNIC!</div>
+<div id="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
 <script>
 /* === SCENĂ === */
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
 
 /* === CAMERE === */
-const cam1 = new THREE.PerspectiveCamera(70, window.innerWidth/2 / window.innerHeight, 0.1, 1000);
-const cam2 = new THREE.PerspectiveCamera(70, window.innerWidth/2 / window.innerHeight, 0.1, 1000);
+const cam1 = new THREE.PerspectiveCamera(70, window.innerWidth/2 / window.innerHeight, 0.1, 2000);
+const cam2 = new THREE.PerspectiveCamera(70, window.innerWidth/2 / window.innerHeight, 0.1, 2000);
 
 /* === RENDERER === */
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
-/* === LUMINI (mai luminos) === */
+/* === LUMINI === */
 const light = new THREE.DirectionalLight(0xffffff, 2.2);
-light.position.set(20, 40, 20);
+light.position.set(40, 80, 40);
 scene.add(light);
 
-const ambient = new THREE.AmbientLight(0xffffff, 1.2);
+const ambient = new THREE.AmbientLight(0xffffff, 0.8);
 scene.add(ambient);
 
-/* === PODEA / STRADĂ === */
-const road = new THREE.Mesh(
-  new THREE.PlaneGeometry(300, 40),
-  new THREE.MeshPhongMaterial({ color: 0x222222 })
+/* === LISTĂ OBIECTE SOLIDE PENTRU COLIZIUNI === */
+const solidObjects = [];
+
+/* === ARENĂ PLATFORMĂ === */
+const platformRadius = 18;
+const platform = new THREE.Mesh(
+  new THREE.BoxGeometry(platformRadius * 2, 0.4, platformRadius * 2),
+  new THREE.MeshPhongMaterial({ color: 0x225577, emissive: 0x112244, shininess: 20 })
 );
-road.rotation.x = -Math.PI / 2;
-scene.add(road);
+platform.position.set(0, 0.2, 0);
+scene.add(platform);
+platform.userData = { hp: 260, destroyed: false, isPlatform: true };
+solidObjects.push(platform);
 
-/* === CASE === */
-function addHouse(x, z) {
-  const house = new THREE.Mesh(
-    new THREE.BoxGeometry(6, 4, 6),
-    new THREE.MeshPhongMaterial({ color: 0xaa8844 })
-  );
-  house.position.set(x, 2, z);
-  scene.add(house);
+function applyPlatformPush(car, state) {
+  if (state.dead || platform.userData.destroyed) return;
+  const pos = new THREE.Vector2(car.position.x, car.position.z);
+  if (pos.length() > platformRadius) return;
 
-  const roof = new THREE.Mesh(
-    new THREE.ConeGeometry(4.5, 3, 4),
-    new THREE.MeshPhongMaterial({ color: 0x552200 })
-  );
-  roof.position.set(x, 5, z);
-  scene.add(roof);
+  const dir = pos.length() > 0.02 ? pos.clone().normalize() : new THREE.Vector2(Math.sin(car.rotation.y), Math.cos(car.rotation.y));
+  const pushStrength = 0.018 + Math.min(0.018, Math.abs(state.speed) * 0.04);
+  car.position.x += dir.x * pushStrength;
+  car.position.z += dir.y * pushStrength;
+  state.speed += 0.004 * (state.speed >= 0 ? 1 : -1);
 }
 
-addHouse(-25, -25);
-addHouse(25, -25);
-addHouse(-25, 25);
-addHouse(25, 25);
-
-/* === COPACI === */
-function addTree(x, z) {
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.5, 0.5, 3),
-    new THREE.MeshPhongMaterial({ color: 0x553300 })
-  );
-  trunk.position.set(x, 1.5, z);
-  scene.add(trunk);
-
-  const leaves = new THREE.Mesh(
-    new THREE.SphereGeometry(2),
-    new THREE.MeshPhongMaterial({ color: 0x228833 })
-  );
-  leaves.position.set(x, 4, z);
-  scene.add(leaves);
+function checkCarFall(car, state) {
+  if (state.dead) return;
+  const pos = new THREE.Vector2(car.position.x, car.position.z);
+  if (pos.length() > platformRadius + 1) {
+    state.dead = true;
+    state.speed = 0;
+    car.visible = false;
+  }
 }
 
-for (let i = -60; i <= 60; i += 20) {
-  addTree(i, -35);
-  addTree(i, 35);
-}
-
-/* === MAȘINI === */
-function createCar(color) {
+/* === MAȘINI CU PĂRȚI DESTRUCTIBILE === */
+function createCar(color, config = {}) {
   const car = new THREE.Group();
+  const hpMult = config.hpMultiplier || 1;
+  const damageMult = config.damageMultiplier || 1;
 
+  // Caroserie principală
+  const bodyMat = new THREE.MeshPhongMaterial({ color });
   const body = new THREE.Mesh(
-    new THREE.BoxGeometry(2, 0.7, 4),
-    new THREE.MeshPhongMaterial({ color })
+    new THREE.BoxGeometry(2.2, 0.8, 4.2),
+    bodyMat
   );
-  body.position.y = 0.5;
+  body.position.y = 0.7;
   car.add(body);
 
-  const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.3, 16);
+  // Capotă
+  const hood = new THREE.Mesh(
+    new THREE.BoxGeometry(2.1, 0.4, 1.4),
+    new THREE.MeshPhongMaterial({ color: color * 0.9 })
+  );
+  hood.position.set(0, 1.0, 1.2);
+  car.add(hood);
+
+  // Portbagaj
+  const trunk = new THREE.Mesh(
+    new THREE.BoxGeometry(2.1, 0.4, 1.4),
+    new THREE.MeshPhongMaterial({ color: color * 0.9 })
+  );
+  trunk.position.set(0, 1.0, -1.2);
+  car.add(trunk);
+
+  // Bară față
+  const bumperFront = new THREE.Mesh(
+    new THREE.BoxGeometry(2.3, 0.4, 0.4),
+    new THREE.MeshPhongMaterial({ color: 0x555555 })
+  );
+  bumperFront.position.set(0, 0.5, 2.2);
+  car.add(bumperFront);
+
+  // Bară spate
+  const bumperRear = new THREE.Mesh(
+    new THREE.BoxGeometry(2.3, 0.4, 0.4),
+    new THREE.MeshPhongMaterial({ color: 0x555555 })
+  );
+  bumperRear.position.set(0, 0.5, -2.2);
+  car.add(bumperRear);
+
+  // Roți
+  const wheelGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.3, 16);
   const wheelMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
 
   function addWheel(x, z) {
     const w = new THREE.Mesh(wheelGeo, wheelMat);
     w.rotation.z = Math.PI / 2;
-    w.position.set(x, 0.2, z);
+    w.position.set(x, 0.3, z);
     car.add(w);
   }
 
-  addWheel( 1,  1.5);
-  addWheel(-1,  1.5);
-  addWheel( 1, -1.5);
-  addWheel(-1, -1.5);
+  addWheel( 1.1,  1.6);
+  addWheel(-1.1,  1.6);
+  addWheel( 1.1, -1.6);
+  addWheel(-1.1, -1.6);
+
+  // Stare damage
+  car.userData.parts = {
+    hood:      { mesh: hood,         hp: 60 * hpMult, destroyed: false },
+    trunk:     { mesh: trunk,        hp: 60 * hpMult, destroyed: false },
+    bumperF:   { mesh: bumperFront,  hp: 90 * hpMult, destroyed: false },
+    bumperR:   { mesh: bumperRear,   hp: 90 * hpMult, destroyed: false },
+    body:      { mesh: body,         hp: 160 * hpMult, destroyed: false },
+    engine:    { hp: 320 * hpMult, destroyed: false } // motor rezistent
+  };
+  car.userData.damageMultiplier = damageMult;
+
+  car.userData.collisionState = {
+    lastCarCollisionWith: null,
+    lastCarCollisionTime: 0,
+    lastWorldCollisionWith: null,
+    lastWorldCollisionTime: 0
+  };
+
+  // Fum + foc (inițial invizibile)
+  const smokeGeo = new THREE.SphereGeometry(0.5, 8, 8);
+  const smokeMat = new THREE.MeshBasicMaterial({ color: 0x555555, transparent: true, opacity: 0.0 });
+  const smoke = new THREE.Mesh(smokeGeo, smokeMat);
+  smoke.position.set(0, 1.6, 0.5);
+  car.add(smoke);
+
+  const fireGeo = new THREE.SphereGeometry(0.4, 8, 8);
+  const fireMat = new THREE.MeshBasicMaterial({ color: 0xff5500, transparent: true, opacity: 0.0 });
+  const fire = new THREE.Mesh(fireGeo, fireMat);
+  fire.position.set(0, 1.3, 0.3);
+  car.add(fire);
+
+  car.userData.smoke = smoke;
+  car.userData.fire = fire;
 
   return car;
 }
 
-const car1 = createCar(0xff0000);
-car1.position.set(-10, 0, 0);
+const car1 = createCar(0xff0000, { hpMultiplier: 1.2, damageMultiplier: 0.9 });
+car1.position.set(-20, 0, 0);
 scene.add(car1);
 
-const car2 = createCar(0x0088ff);
-car2.position.set(10, 0, 0);
+const car2 = createCar(0x0088ff, { hpMultiplier: 0.9, damageMultiplier: 1.2 });
+car2.position.set(20, 0, 0);
 scene.add(car2);
 
+/* === STARE MAȘINI === */
+const state1 = {
+  speed: 0,
+  velocity: new THREE.Vector3(),
+  prevPos: new THREE.Vector3(),
+  engineDead: false,
+  dead: false
+};
+const state2 = {
+  speed: 0,
+  velocity: new THREE.Vector3(),
+  prevPos: new THREE.Vector3(),
+  engineDead: false,
+  dead: false
+};
+
 /* === CAMERE THIRD-PERSON === */
-cam1.position.set(0, 6, -10);
+cam1.position.set(0, 8, -14);
 cam1.lookAt(car1.position);
 
-cam2.position.set(0, 6, -10);
+cam2.position.set(0, 8, -14);
 cam2.lookAt(car2.position);
 
 /* === CONTROALE === */
 const keys = {};
 document.addEventListener("keydown", e => keys[e.key.toLowerCase()] = true);
-document.addEventListener("keyup", e => keys[e.key.toLowerCase()] = false);
+document.addEventListener("keyup",   e => keys[e.key.toLowerCase()] = false);
 
+/* === LIMITĂ ARENĂ (cerc) === */
+function clampToArena(car) {
+  const rMax = 115;
+  const pos = car.position;
+  const dist = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
+  if (dist > rMax) {
+    const factor = rMax / dist;
+    pos.x *= factor;
+    pos.z *= factor;
+  }
+}
+
+/* === CONDUS CU FIZICĂ SIMPLĂ === */
 function driveCar(car, forward, backward, left, right, state) {
-  const accel = 0.01;
-  const maxSpeed = 0.4;
-  const turnSpeed = 0.03;
+  if (state.dead) return;
+  const accel = 0.018;
+  const maxSpeed = 0.65;
+  const turnSpeed = 0.035;
 
-  if (keys[forward]) state.speed = Math.min(maxSpeed, state.speed + accel);
-  if (keys[backward]) state.speed = Math.max(-maxSpeed, state.speed - accel);
+  if (!state.engineDead) {
+    if (keys[forward]) state.speed = Math.min(maxSpeed, state.speed + accel);
+    if (keys[backward]) state.speed = Math.max(-maxSpeed * 0.6, state.speed - accel);
+  }
 
-  if (keys[left]) car.rotation.y += turnSpeed * (state.speed >= 0 ? 1 : -1);
+  if (keys[left])  car.rotation.y += turnSpeed * (state.speed >= 0 ? 1 : -1);
   if (keys[right]) car.rotation.y -= turnSpeed * (state.speed >= 0 ? 1 : -1);
 
-  state.speed *= 0.98;
+  state.speed *= 0.985;
+
+  state.prevPos.copy(car.position);
 
   car.position.x += Math.sin(car.rotation.y) * state.speed;
   car.position.z += Math.cos(car.rotation.y) * state.speed;
+
+  state.velocity.subVectors(car.position, state.prevPos);
+
+  clampToArena(car);
+
+  car.rotation.z = -state.speed * 0.4 * (keys[left] ? 1 : keys[right] ? -1 : 0);
 }
 
-const state1 = { speed: 0 };
-const state2 = { speed: 0 };
+/* === DAMAGE & DEMOLARE === */
+function applyVisualDamage(part, intensity) {
+  if (!part || part.destroyed) return;
+  part.hp -= intensity;
+  if (part.hp <= 0) {
+    part.destroyed = true;
+    if (part.mesh) {
+      part.mesh.scale.y *= 0.4;
+      part.mesh.position.y -= 0.2;
+      part.mesh.rotation.x += (Math.random() - 0.5) * 0.8;
+      part.mesh.rotation.y += (Math.random() - 0.5) * 0.8;
+    }
+  } else {
+    if (part.mesh) {
+      part.mesh.position.y -= 0.02 * (intensity / 10);
+      part.mesh.rotation.x += (Math.random() - 0.5) * 0.1;
+      part.mesh.rotation.y += (Math.random() - 0.5) * 0.1;
+    }
+  }
+}
 
-/* === COLIZIUNE === */
-function checkCollision() {
-  const b1 = new THREE.Box3().setFromObject(car1);
-  const b2 = new THREE.Box3().setFromObject(car2);
+function spawnDebris(position) {
+  const count = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < count; i++) {
+    const piece = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.2, 0.6),
+      new THREE.MeshPhongMaterial({ color: 0x555555 })
+    );
+    piece.position.copy(position);
+    piece.position.x += (Math.random() - 0.5) * 1.5;
+    piece.position.y += 0.5 + Math.random() * 0.5;
+    piece.position.z += (Math.random() - 0.5) * 1.5;
+    piece.rotation.set(
+      Math.random() * Math.PI,
+      Math.random() * Math.PI,
+      Math.random() * Math.PI
+    );
+    scene.add(piece);
 
-  document.getElementById("crash").style.display =
-    b1.intersectsBox(b2) ? "block" : "none";
+    const vel = new THREE.Vector3(
+      (Math.random() - 0.5) * 0.3,
+      0.1 + Math.random() * 0.2,
+      (Math.random() - 0.5) * 0.3
+    );
+    const gravity = -0.01;
+    let life = 120;
+
+    function animatePiece() {
+      if (life-- <= 0) {
+        scene.remove(piece);
+        return;
+      }
+      vel.y += gravity;
+      piece.position.add(vel);
+      piece.rotation.x += 0.05;
+      piece.rotation.y += 0.04;
+      requestAnimationFrame(animatePiece);
+    }
+    animatePiece();
+  }
+}
+
+function updateSmokeAndFire(car) {
+  const parts = car.userData.parts;
+  const smoke = car.userData.smoke;
+  const fire = car.userData.fire;
+
+  const engineDamage = Math.max(0, 200 - parts.engine.hp);
+  const engineRatio = engineDamage / 200;
+
+  smoke.material.opacity = engineRatio * 0.9;
+  fire.material.opacity  = engineRatio > 0.6 ? (engineRatio - 0.6) * 2.5 : 0.0;
+
+  smoke.position.y = 1.6 + Math.sin(Date.now() * 0.002) * 0.1;
+}
+
+/* === COLIZIUNE MAȘINI === */
+function handleCarCollision(carA, stateA, carB, stateB) {
+  if (stateA.dead || stateB.dead) return;
+  const b1 = new THREE.Box3().setFromObject(carA);
+  const b2 = new THREE.Box3().setFromObject(carB);
+
+  const crashText = document.getElementById("crash");
+
+  if (!b1.intersectsBox(b2)) {
+    crashText.style.display = "none";
+    return;
+  }
+
+  const now = performance.now();
+  const colA = carA.userData.collisionState;
+  const colB = carB.userData.collisionState;
+  if (colA.lastCarCollisionWith === carB.uuid && now - colA.lastCarCollisionTime < 200) return;
+  if (colB.lastCarCollisionWith === carA.uuid && now - colB.lastCarCollisionTime < 200) return;
+  colA.lastCarCollisionWith = carB.uuid;
+  colA.lastCarCollisionTime = now;
+  colB.lastCarCollisionWith = carA.uuid;
+  colB.lastCarCollisionTime = now;
+
+  const relVel = new THREE.Vector3().subVectors(stateA.velocity, stateB.velocity);
+  const impactSpeed = relVel.length();
+
+  if (impactSpeed < 0.05) return;
+
+  crashText.style.display = "block";
+
+  const impactIntensity = impactSpeed * 200;
+  const speedA = stateA.velocity.length();
+  const speedB = stateB.velocity.length();
+  let intensityA = impactIntensity;
+  let intensityB = impactIntensity;
+
+  if (speedA > speedB + 0.03) {
+    intensityA *= 0.75;
+    intensityB *= 1.25;
+  } else if (speedB > speedA + 0.03) {
+    intensityB *= 0.75;
+    intensityA *= 1.25;
+  }
+
+  const dirAB = new THREE.Vector3().subVectors(carB.position, carA.position).normalize();
+
+  const partsA = carA.userData.parts;
+  const forwardA = new THREE.Vector3(Math.sin(carA.rotation.y), 0, Math.cos(carA.rotation.y));
+  const dotA = forwardA.dot(dirAB);
+
+  if (dotA > 0.3) {
+    applyVisualDamage(partsA.bumperF, intensityA * 0.6 * carA.userData.damageMultiplier);
+    applyVisualDamage(partsA.hood,    intensityA * 0.4 * carA.userData.damageMultiplier);
+  } else if (dotA < -0.3) {
+    applyVisualDamage(partsA.bumperR, intensityA * 0.6 * carA.userData.damageMultiplier);
+    applyVisualDamage(partsA.trunk,   intensityA * 0.4 * carA.userData.damageMultiplier);
+  } else {
+    applyVisualDamage(partsA.body,    intensityA * 0.7 * carA.userData.damageMultiplier);
+  }
+
+  if (intensityA > 25) {
+    partsA.engine.hp -= intensityA * 0.15 * carA.userData.damageMultiplier;
+  }
+  if (partsA.engine.hp <= 0 && !partsA.engine.destroyed) {
+    partsA.engine.destroyed = true;
+    spawnDebris(carA.position);
+  }
+
+  const partsB = carB.userData.parts;
+  const forwardB = new THREE.Vector3(Math.sin(carB.rotation.y), 0, Math.cos(carB.rotation.y));
+  const dirBA = dirAB.clone().multiplyScalar(-1);
+  const dotB = forwardB.dot(dirBA);
+
+  if (dotB > 0.3) {
+    applyVisualDamage(partsB.bumperF, intensityB * 0.6 * carB.userData.damageMultiplier);
+    applyVisualDamage(partsB.hood,    intensityB * 0.4 * carB.userData.damageMultiplier);
+  } else if (dotB < -0.3) {
+    applyVisualDamage(partsB.bumperR, intensityB * 0.6 * carB.userData.damageMultiplier);
+    applyVisualDamage(partsB.trunk,   intensityB * 0.4 * carB.userData.damageMultiplier);
+  } else {
+    applyVisualDamage(partsB.body,    intensityB * 0.7 * carB.userData.damageMultiplier);
+  }
+
+  if (intensityB > 25) {
+    partsB.engine.hp -= intensityB * 0.15 * carB.userData.damageMultiplier;
+  }
+  if (partsB.engine.hp <= 0 && !partsB.engine.destroyed) {
+    partsB.engine.destroyed = true;
+    spawnDebris(carB.position);
+  }
+
+  updateSmokeAndFire(carA);
+  updateSmokeAndFire(carB);
+
+  if (partsA.engine.hp <= 0) stateA.engineDead = true;
+  if (partsB.engine.hp <= 0) stateB.engineDead = true;
+
+  carA.position.add(relVel.clone().multiplyScalar(-2));
+  carB.position.add(relVel.clone().multiplyScalar( 2));
+}
+
+/* === COLIZIUNE MAȘINĂ ↔ OBIECTE DIN ARENĂ === */
+function handleWorldCollision(car, state) {
+  if (state.dead) return;
+  const carBox = new THREE.Box3().setFromObject(car);
+  const parts = car.userData.parts;
+
+  const now = performance.now();
+  for (const obj of solidObjects) {
+    if (obj.userData && obj.userData.destroyed) continue;
+    const box = new THREE.Box3().setFromObject(obj);
+    if (!carBox.intersectsBox(box)) continue;
+
+    if (car.userData.collisionState.lastWorldCollisionWith === obj.uuid && now - car.userData.collisionState.lastWorldCollisionTime < 200) continue;
+    car.userData.collisionState.lastWorldCollisionWith = obj.uuid;
+    car.userData.collisionState.lastWorldCollisionTime = now;
+
+    const impactSpeed = state.velocity.length();
+    if (impactSpeed < 0.03) continue;
+
+    const impactIntensity = impactSpeed * 180;
+
+    const dir = state.velocity.clone().normalize();
+    const forward = new THREE.Vector3(Math.sin(car.rotation.y), 0, Math.cos(car.rotation.y));
+    const dot = forward.dot(dir);
+
+    if (dot > 0.3) {
+      applyVisualDamage(parts.bumperF, impactIntensity * 0.5 * car.userData.damageMultiplier);
+      applyVisualDamage(parts.hood,    impactIntensity * 0.3 * car.userData.damageMultiplier);
+    } else if (dot < -0.3) {
+      applyVisualDamage(parts.bumperR, impactIntensity * 0.5 * car.userData.damageMultiplier);
+      applyVisualDamage(parts.trunk,   impactIntensity * 0.3 * car.userData.damageMultiplier);
+    } else {
+      applyVisualDamage(parts.body,    impactIntensity * 0.6 * car.userData.damageMultiplier);
+    }
+
+    if (impactIntensity > 30) {
+      parts.engine.hp -= impactIntensity * 0.12 * car.userData.damageMultiplier;
+    }
+    if (parts.engine.hp <= 0 && !parts.engine.destroyed) {
+      parts.engine.destroyed = true;
+      spawnDebris(car.position);
+      state.engineDead = true;
+    }
+
+    const worldDamage = impactIntensity * 0.25;
+    if (obj.userData && !obj.userData.destroyed) {
+      obj.userData.hp -= worldDamage;
+      if (obj.userData.hp <= 0) {
+        obj.userData.destroyed = true;
+        spawnDebris(obj.position);
+        obj.visible = false;
+      }
+    }
+
+    updateSmokeAndFire(car);
+
+    // recul simplu
+    car.position.add(state.velocity.clone().multiplyScalar(-2));
+  }
+}
+
+/* === STATUS TEXT === */
+function updateStatus() {
+  const s = document.getElementById("status");
+  const p1 = car1.userData.parts;
+  const p2 = car2.userData.parts;
+
+  function clamp(v) { return Math.max(0, Math.round(v)); }
+
+  const status1 = state1.dead ? 'DEAD' : `Engine: ${clamp(p1.engine.hp)}  Body: ${clamp(p1.body.hp)}  Hood: ${clamp(p1.hood.hp)}  Trunk: ${clamp(p1.trunk.hp)}`;
+  const status2 = state2.dead ? 'DEAD' : `Engine: ${clamp(p2.engine.hp)}  Body: ${clamp(p2.body.hp)}  Hood: ${clamp(p2.hood.hp)}  Trunk: ${clamp(p2.trunk.hp)}`;
+
+  s.textContent =
+    `CAR1 [WASD]  ${status1} | ` +
+    `CAR2 [Săgeți]  ${status2}`;
 }
 
 /* === LOOP === */
 function animate() {
   requestAnimationFrame(animate);
 
-  // Mașina roșie – W A S D
   driveCar(car1, "w", "s", "a", "d", state1);
-  // Mașina albastră – săgeți
   driveCar(car2, "arrowup", "arrowdown", "arrowleft", "arrowright", state2);
 
-  checkCollision();
+  applyPlatformPush(car1, state1);
+  applyPlatformPush(car2, state2);
 
-  // Actualizăm camerele third-person
+  checkCarFall(car1, state1);
+  checkCarFall(car2, state2);
+  applyPlatformPush(car1, state1);
+  applyPlatformPush(car2, state2);
+
+  handleCarCollision(car1, state1, car2, state2);
+  handleWorldCollision(car1, state1);
+  handleWorldCollision(car2, state2);
+
+  updateSmokeAndFire(car1);
+  updateSmokeAndFire(car2);
+
   cam1.position.set(
-    car1.position.x - Math.sin(car1.rotation.y) * 10,
-    car1.position.y + 6,
-    car1.position.z - Math.cos(car1.rotation.y) * 10
+    car1.position.x - Math.sin(car1.rotation.y) * 12,
+    car1.position.y + 7,
+    car1.position.z - Math.cos(car1.rotation.y) * 12
   );
   cam1.lookAt(car1.position);
 
   cam2.position.set(
-    car2.position.x - Math.sin(car2.rotation.y) * 10,
-    car2.position.y + 6,
-    car2.position.z - Math.cos(car2.rotation.y) * 10
+    car2.position.x - Math.sin(car2.rotation.y) * 12,
+    car2.position.y + 7,
+    car2.position.z - Math.cos(car2.rotation.y) * 12
   );
   cam2.lookAt(car2.position);
 
+  updateStatus();
+
   renderer.setScissorTest(true);
 
-  // Ecran stânga – cam1
   renderer.setViewport(0, 0, window.innerWidth/2, window.innerHeight);
   renderer.setScissor(0, 0, window.innerWidth/2, window.innerHeight);
   renderer.render(scene, cam1);
 
-  // Ecran dreapta – cam2
   renderer.setViewport(window.innerWidth/2, 0, window.innerWidth/2, window.innerHeight);
   renderer.setScissor(window.innerWidth/2, 0, window.innerWidth/2, window.innerHeight);
   renderer.render(scene, cam2);
