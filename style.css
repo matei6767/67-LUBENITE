@@ -1,0 +1,72 @@
+:root {
+  --bg: #1f1f2e;
+  --panel: #27293f;
+  --text: #eef2ff;
+  --blue: #4da6ff;
+  --red: #ff6b6b;
+  --green: #7bd57b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, sans-serif;
+  background: radial-gradient(circle at top, #3f4f86 0%, #151928 80%);
+  color: var(--text);
+}
+
+.container {
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(2rem, 4vw, 3rem);
+}
+
+p {
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+#restartButton {
+  padding: 0.75rem 1.2rem;
+  border: none;
+  background: var(--blue);
+  color: #111827;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+#restartButton:hover {
+  background: #6fb3ff;
+}
+
+canvas {
+  width: 100%;
+  max-width: 100%;
+  background: linear-gradient(180deg, #2b2f4d 0%, #181b2f 100%);
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  display: block;
+}
+
+.controls {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 18px;
+}
