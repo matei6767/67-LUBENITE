@@ -54,20 +54,104 @@ scene.add(ambient);
 const solidObjects = [];
 
 /* === ARENĂ PLATFORMĂ === */
-const platformRadius = 18;
-const platform = new THREE.Mesh(
-  new THREE.BoxGeometry(platformRadius * 2, 0.4, platformRadius * 2),
-  new THREE.MeshPhongMaterial({ color: 0x225577, emissive: 0x112244, shininess: 20 })
+const platformRadius = 28;
+const platformRingWidth = 4;
+const platform = new THREE.Group();
+const platformMaterial = new THREE.MeshPhongMaterial({ color: 0x885522, emissive: 0x442211, shininess: 10 });
+const ringMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0x666666, shininess: 5, side: THREE.DoubleSide });
+
+const platformBase = new THREE.Mesh(
+  new THREE.CircleGeometry(platformRadius, 64),
+  platformMaterial
 );
-platform.position.set(0, 0.2, 0);
+platformBase.rotation.x = -Math.PI / 2;
+platformBase.position.y = 0.1;
+platform.add(platformBase);
+
+const platformRing = new THREE.Mesh(
+  new THREE.RingGeometry(platformRadius - platformRingWidth, platformRadius, 64),
+  ringMaterial
+);
+platformRing.rotation.x = -Math.PI / 2;
+platformRing.position.y = 0.12;
+platform.add(platformRing);
+
 scene.add(platform);
-platform.userData = { hp: 260, destroyed: false, isPlatform: true };
+platform.userData = { hp: 320, destroyed: false, isPlatform: true };
 solidObjects.push(platform);
 
+const arenaBorder = new THREE.Mesh(
+  new THREE.RingGeometry(80, 120, 64, 1),
+  new THREE.MeshPhongMaterial({ color: 0x222222, side: THREE.DoubleSide })
+);
+arenaBorder.rotation.x = -Math.PI / 2;
+scene.add(arenaBorder);
+
+// Ziduri în jurul arenei
+function addWall(angle) {
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(60, 10, 2),
+    new THREE.MeshPhongMaterial({ color: 0x333333 })
+  );
+  wall.position.set(
+    Math.cos(angle) * 110,
+    5,
+    Math.sin(angle) * 110
+  );
+  wall.rotation.y = -angle;
+  scene.add(wall);
+  solidObjects.push(wall);
+}
+for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+  addWall(a);
+}
+
+const rampObjects = [];
+function addRamp(angle) {
+  const ramp = new THREE.Mesh(
+    new THREE.BoxGeometry(12, 1.2, 6),
+    new THREE.MeshPhongMaterial({ color: 0x888888 })
+  );
+  ramp.position.set(
+    Math.cos(angle) * 28,
+    0.6,
+    Math.sin(angle) * 28
+  );
+  ramp.rotation.y = -angle;
+  ramp.rotation.x = -Math.PI / 10;
+  ramp.userData.isRamp = true;
+  scene.add(ramp);
+  solidObjects.push(ramp);
+  rampObjects.push(ramp);
+}
+for (let a = 0; a < Math.PI * 2; a += Math.PI / 2) {
+  addRamp(a);
+}
+
+const voidPlane = new THREE.Mesh(
+  new THREE.CircleGeometry(150, 64),
+  new THREE.MeshBasicMaterial({ color: 0x000000 })
+);
+voidPlane.rotation.x = -Math.PI / 2;
+voidPlane.position.y = -18;
+scene.add(voidPlane);
+
+function isOnPlatform(pos) {
+  return pos.length() <= platformRadius;
+}
+
+function isOnRamp(car) {
+  const carBox = new THREE.Box3().setFromObject(car);
+  return rampObjects.some(ramp => {
+    const rampBox = new THREE.Box3().setFromObject(ramp);
+    return carBox.intersectsBox(rampBox);
+  });
+}
+
 function applyPlatformPush(car, state) {
-  if (state.dead || platform.userData.destroyed) return;
+  if (state.dead || state.falling || platform.userData.destroyed) return;
   const pos = new THREE.Vector2(car.position.x, car.position.z);
-  if (pos.length() > platformRadius) return;
+  if (!isOnPlatform(pos)) return;
 
   const dir = pos.length() > 0.02 ? pos.clone().normalize() : new THREE.Vector2(Math.sin(car.rotation.y), Math.cos(car.rotation.y));
   const pushStrength = 0.018 + Math.min(0.018, Math.abs(state.speed) * 0.04);
@@ -79,10 +163,28 @@ function applyPlatformPush(car, state) {
 function checkCarFall(car, state) {
   if (state.dead) return;
   const pos = new THREE.Vector2(car.position.x, car.position.z);
-  if (pos.length() > platformRadius + 1) {
-    state.dead = true;
+
+  if (state.airborne) {
+    if (car.position.y < -18) {
+      state.dead = true;
+      car.visible = false;
+    }
+    return;
+  }
+
+  if (!isOnPlatform(pos) && !isOnRamp(car) && !state.falling) {
+    state.falling = true;
     state.speed = 0;
-    car.visible = false;
+    state.verticalVelocity = 0;
+  }
+
+  if (state.falling) {
+    car.position.y -= 0.4;
+    car.rotation.x += 0.04;
+    if (car.position.y < -18) {
+      state.dead = true;
+      car.visible = false;
+    }
   }
 }
 
@@ -200,14 +302,20 @@ const state1 = {
   velocity: new THREE.Vector3(),
   prevPos: new THREE.Vector3(),
   engineDead: false,
-  dead: false
+  dead: false,
+  falling: false,
+  airborne: false,
+  verticalVelocity: 0
 };
 const state2 = {
   speed: 0,
   velocity: new THREE.Vector3(),
   prevPos: new THREE.Vector3(),
   engineDead: false,
-  dead: false
+  dead: false,
+  falling: false,
+  airborne: false,
+  verticalVelocity: 0
 };
 
 /* === CAMERE THIRD-PERSON === */
@@ -224,7 +332,7 @@ document.addEventListener("keyup",   e => keys[e.key.toLowerCase()] = false);
 
 /* === LIMITĂ ARENĂ (cerc) === */
 function clampToArena(car) {
-  const rMax = 115;
+  const rMax = 145;
   const pos = car.position;
   const dist = Math.sqrt(pos.x * pos.x + pos.z * pos.z);
   if (dist > rMax) {
@@ -236,7 +344,7 @@ function clampToArena(car) {
 
 /* === CONDUS CU FIZICĂ SIMPLĂ === */
 function driveCar(car, forward, backward, left, right, state) {
-  if (state.dead) return;
+  if (state.dead || state.falling) return;
   const accel = 0.018;
   const maxSpeed = 0.65;
   const turnSpeed = 0.035;
@@ -255,6 +363,18 @@ function driveCar(car, forward, backward, left, right, state) {
 
   car.position.x += Math.sin(car.rotation.y) * state.speed;
   car.position.z += Math.cos(car.rotation.y) * state.speed;
+
+  if (state.airborne) {
+    state.verticalVelocity -= 0.02;
+    car.position.y += state.verticalVelocity;
+    if (car.position.y <= 0) {
+      car.position.y = 0;
+      state.airborne = false;
+      state.verticalVelocity = 0;
+    }
+  } else if (!state.falling) {
+    car.position.y = 0;
+  }
 
   state.velocity.subVectors(car.position, state.prevPos);
 
@@ -341,7 +461,7 @@ function updateSmokeAndFire(car) {
 
 /* === COLIZIUNE MAȘINI === */
 function handleCarCollision(carA, stateA, carB, stateB) {
-  if (stateA.dead || stateB.dead) return;
+  if (stateA.dead || stateA.falling || stateB.dead || stateB.falling) return;
   const b1 = new THREE.Box3().setFromObject(carA);
   const b2 = new THREE.Box3().setFromObject(carB);
 
@@ -442,13 +562,14 @@ function handleCarCollision(carA, stateA, carB, stateB) {
 
 /* === COLIZIUNE MAȘINĂ ↔ OBIECTE DIN ARENĂ === */
 function handleWorldCollision(car, state) {
-  if (state.dead) return;
+  if (state.dead || state.falling) return;
   const carBox = new THREE.Box3().setFromObject(car);
   const parts = car.userData.parts;
 
   const now = performance.now();
   for (const obj of solidObjects) {
     if (obj.userData && obj.userData.destroyed) continue;
+    if (obj.userData && obj.userData.isRamp) continue;
     const box = new THREE.Box3().setFromObject(obj);
     if (!carBox.intersectsBox(box)) continue;
 
@@ -501,6 +622,21 @@ function handleWorldCollision(car, state) {
   }
 }
 
+function handleRampCollision(car, state) {
+  if (state.dead || state.falling || state.airborne) return;
+  const carBox = new THREE.Box3().setFromObject(car);
+  for (const ramp of rampObjects) {
+    const rampBox = new THREE.Box3().setFromObject(ramp);
+    if (!carBox.intersectsBox(rampBox)) continue;
+    const speed = Math.abs(state.speed);
+    if (speed < 0.18) continue;
+    state.airborne = true;
+    state.verticalVelocity = 0.18 + speed * 0.16;
+    car.position.y = 0.6;
+    break;
+  }
+}
+
 /* === STATUS TEXT === */
 function updateStatus() {
   const s = document.getElementById("status");
@@ -509,8 +645,11 @@ function updateStatus() {
 
   function clamp(v) { return Math.max(0, Math.round(v)); }
 
-  const status1 = state1.dead ? 'DEAD' : `Engine: ${clamp(p1.engine.hp)}  Body: ${clamp(p1.body.hp)}  Hood: ${clamp(p1.hood.hp)}  Trunk: ${clamp(p1.trunk.hp)}`;
-  const status2 = state2.dead ? 'DEAD' : `Engine: ${clamp(p2.engine.hp)}  Body: ${clamp(p2.body.hp)}  Hood: ${clamp(p2.hood.hp)}  Trunk: ${clamp(p2.trunk.hp)}`;
+  const status1State = state1.dead ? 'DEAD' : state1.falling ? 'VOID' : state1.airborne ? 'AER' : 'OK';
+  const status2State = state2.dead ? 'DEAD' : state2.falling ? 'VOID' : state2.airborne ? 'AER' : 'OK';
+
+  const status1 = state1.dead ? 'DEAD' : `${status1State} Engine: ${clamp(p1.engine.hp)} Body: ${clamp(p1.body.hp)} Hood: ${clamp(p1.hood.hp)} Trunk: ${clamp(p1.trunk.hp)}`;
+  const status2 = state2.dead ? 'DEAD' : `${status2State} Engine: ${clamp(p2.engine.hp)} Body: ${clamp(p2.body.hp)} Hood: ${clamp(p2.hood.hp)} Trunk: ${clamp(p2.trunk.hp)}`;
 
   s.textContent =
     `CAR1 [WASD]  ${status1} | ` +
@@ -524,13 +663,14 @@ function animate() {
   driveCar(car1, "w", "s", "a", "d", state1);
   driveCar(car2, "arrowup", "arrowdown", "arrowleft", "arrowright", state2);
 
+  handleRampCollision(car1, state1);
+  handleRampCollision(car2, state2);
+
   applyPlatformPush(car1, state1);
   applyPlatformPush(car2, state2);
 
   checkCarFall(car1, state1);
   checkCarFall(car2, state2);
-  applyPlatformPush(car1, state1);
-  applyPlatformPush(car2, state2);
 
   handleCarCollision(car1, state1, car2, state2);
   handleWorldCollision(car1, state1);
